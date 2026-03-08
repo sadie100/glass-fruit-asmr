@@ -517,6 +517,7 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
+    renderer.localClippingEnabled = true;
     document.body.prepend(renderer.domElement);
 
     // Controls
@@ -892,6 +893,7 @@
 
       score++;
       document.getElementById('score').textContent = score;
+      hideHint();
 
       // Respawn after delay
       setTimeout(() => {
@@ -927,7 +929,7 @@
       controls.enabled = false;
 
       // Init audio on first interaction
-      audio.init();
+      audio.init().then(() => audio.playAmbient());
     }
 
     function onPointerUp(e) {
@@ -1109,15 +1111,16 @@
       slashCanvas.height = window.innerHeight;
     });
 
-    // Hide hint after first slice
+    // Hide hint after first successful slice
     const hint = document.getElementById('hint');
-    const origPointerUp = onPointerUp;
-    window.addEventListener('pointerup', () => {
-      if (hint.style.opacity !== '0') {
+    let hintHidden = false;
+    function hideHint() {
+      if (!hintHidden) {
+        hintHidden = true;
         hint.style.transition = 'opacity 1s';
         hint.style.opacity = '0';
       }
-    }, { once: true });
+    }
   </script>
 </body>
 </html>
