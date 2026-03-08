@@ -1,0 +1,9 @@
+{
+  "name": "glass-fruit-asmr",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "npx serve . -p 8080",
+    "start": "npx serve . -p 8080"
+  }
+}
