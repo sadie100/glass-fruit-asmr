@@ -193,21 +193,21 @@
       }
 
       // Glass slice sound — the main ASMR effect
-      playSlice(speed = 1, fruitType = 'apple') {
+      playSlice(speed = 1, fruitType = 'apple', volume = 1.0) {
         if (!this.initialized) return;
         const ctx = this.ctx;
         const now = ctx.currentTime;
         const params = FRUIT_AUDIO_PARAMS[fruitType] || FRUIT_AUDIO_PARAMS.apple;
 
         // Layer 1: Glass cracking / cutting tone
-        this._glassSliceLayer(now, params, speed);
+        this._glassSliceLayer(now, params, speed, volume);
         // Layer 2: Crystal resonance
-        this._crystalResonance(now, params, speed);
+        this._crystalResonance(now, params, speed, volume);
         // Layer 3: Tiny shards falling
-        this._shardTinkle(now, params, speed);
+        this._shardTinkle(now, params, speed, volume);
       }
 
-      _glassSliceLayer(now, params, speed) {
+      _glassSliceLayer(now, params, speed, volume = 1.0) {
         const ctx = this.ctx;
         const duration = 0.4 / Math.max(speed, 0.5);
 
@@ -234,7 +234,7 @@
 
         const gain = ctx.createGain();
         gain.gain.setValueAtTime(0, now);
-        gain.gain.linearRampToValueAtTime(0.15, now + 0.02);
+        gain.gain.linearRampToValueAtTime(0.15 * volume, now + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
         noise.connect(bandpass).connect(highpass).connect(gain);
@@ -244,7 +244,7 @@
         noise.stop(now + duration);
       }
 
-      _crystalResonance(now, params, speed) {
+      _crystalResonance(now, params, speed, volume = 1.0) {
         const ctx = this.ctx;
         const duration = 1.5 + params.resonance;
 
@@ -263,7 +263,7 @@
           osc.frequency.exponentialRampToValueAtTime(freq * 0.98, now + duration);
 
           const gain = ctx.createGain();
-          const vol = 0.06 / (i + 1);
+          const vol = (0.06 / (i + 1)) * volume;
           gain.gain.setValueAtTime(0, now + 0.05);
           gain.gain.linearRampToValueAtTime(vol, now + 0.08);
           gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
@@ -276,7 +276,7 @@
         });
       }
 
-      _shardTinkle(now, params, speed) {
+      _shardTinkle(now, params, speed, volume = 1.0) {
         const ctx = this.ctx;
         const numShards = 3 + Math.floor(Math.random() * 5);
 
@@ -291,7 +291,7 @@
 
           const gain = ctx.createGain();
           gain.gain.setValueAtTime(0, now + delay);
-          gain.gain.linearRampToValueAtTime(0.03, now + delay + 0.005);
+          gain.gain.linearRampToValueAtTime(0.03 * volume, now + delay + 0.005);
           gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + duration);
 
           osc.connect(gain);
@@ -644,13 +644,28 @@
       return v;
     }
 
-    function computeSlicePlane(startNDC, endNDC) {
+    function computeSlicePlane(startNDC, endNDC, hitObjects) {
       const sliceDir3D = new THREE.Vector3(
         endNDC.x - startNDC.x, endNDC.y - startNDC.y, 0
       ).normalize();
       const planeNormal = new THREE.Vector3(-sliceDir3D.y, sliceDir3D.x, 0).normalize();
       planeNormal.applyQuaternion(camera.quaternion.clone());
-      return planeNormal;
+
+      // Raycast midpoint to find where the cut plane should pass through
+      let planeOffset = 0;
+      if (hitObjects && hitObjects.length > 0) {
+        const midNDC = new THREE.Vector2(
+          (startNDC.x + endNDC.x) / 2,
+          (startNDC.y + endNDC.y) / 2
+        );
+        raycaster.setFromCamera(midNDC, camera);
+        const intersects = raycaster.intersectObjects(hitObjects, true);
+        if (intersects.length > 0) {
+          planeOffset = -planeNormal.dot(intersects[0].point);
+        }
+      }
+
+      return { normal: planeNormal, offset: planeOffset };
     }
 
     function disposeGroup(group) {
@@ -685,7 +700,6 @@
     const mouse = new THREE.Vector2();
     let isFirstSlice = true;
     let zoomAnimating = false;
-    let respawnTimer = null;
 
     // ─── Particle System ───
     class GlassParticle {
@@ -714,41 +728,39 @@
 
         this.velocity = velocity.clone();
         this.angularVel = new THREE.Vector3(
-          (Math.random() - 0.5) * 10,
-          (Math.random() - 0.5) * 10,
-          (Math.random() - 0.5) * 10
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2
         );
-        this.life = 1.0;
-        this.decay = 0.3 + Math.random() * 0.5;
-        this.landed = false;
+        this.maxLife = 2.0 + Math.random(); // 2~3s lifespan
+        this.age = 0;
 
         scene.add(this.mesh);
       }
 
       update(dt) {
-        if (this.landed) {
-          this.life -= this.decay * dt * 0.5;
-          this.mesh.material.opacity = Math.max(0, this.life * 0.6);
-          return this.life > 0;
-        }
+        this.age += dt;
+        if (this.age >= this.maxLife) return false;
 
-        this.velocity.y -= 6 * dt; // gravity
+        this.velocity.y -= 1.5 * dt; // gentle gravity
+        // Decelerate over time
+        this.velocity.multiplyScalar(1 - 0.5 * dt);
         this.mesh.position.addScaledVector(this.velocity, dt);
         this.mesh.rotation.x += this.angularVel.x * dt;
         this.mesh.rotation.y += this.angularVel.y * dt;
         this.mesh.rotation.z += this.angularVel.z * dt;
 
-        // Ground collision
-        if (this.mesh.position.y < -1.4) {
-          this.mesh.position.y = -1.4;
-          this.landed = true;
-          this.velocity.set(0, 0, 0);
+        // Fade out over lifetime
+        const life = 1 - this.age / this.maxLife;
+        this.mesh.material.opacity = Math.max(0, life * 0.8);
+
+        // Quiet tinkle at random point
+        if (!this.tinkled && this.age > 0.3 + Math.random() * 0.5) {
+          this.tinkled = true;
           audio.playShardLand();
         }
 
-        this.life -= this.decay * dt;
-        this.mesh.material.opacity = Math.max(0, this.life * 0.8);
-        return this.life > 0;
+        return true;
       }
 
       dispose() {
@@ -758,14 +770,17 @@
       }
     }
 
-    function spawnParticles(position, color, count = 20) {
+    function spawnParticles(position, color, normal, count = 20) {
       for (let i = 0; i < count; i++) {
-        const vel = new THREE.Vector3(
-          (Math.random() - 0.5) * 4,
-          Math.random() * 3 + 1,
-          (Math.random() - 0.5) * 4
+        // Scatter gently from cut surface
+        const speed = 0.3 + Math.random() * 0.5;
+        const spread = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.6,
+          (Math.random() - 0.5) * 0.6,
+          (Math.random() - 0.5) * 0.6
         );
-        particles.push(new GlassParticle(position.clone(), color, vel));
+        const dir = normal.clone().multiplyScalar((Math.random() > 0.5 ? 1 : -1) * speed).add(spread);
+        particles.push(new GlassParticle(position.clone(), color, dir));
       }
     }
 
@@ -949,7 +964,7 @@
     }
 
     // ─── Mesh Slicing (§7) ───
-    function createSlicedHalves(meshesToSlice, planeNormal, fruitDef, isReSlice, sourceSliceCount) {
+    function createSlicedHalves(meshesToSlice, planeNormal, planeOffset, fruitDef, isReSlice, sourceSliceCount) {
       const newPieces = [];
       const sliceCount = (sourceSliceCount || 0) + 1;
       const particleCount = isReSlice ? 15 : 30;
@@ -984,7 +999,7 @@
             side: THREE.DoubleSide,
             depthWrite: false,
             clipping: true,
-            clippingPlanes: [...existingPlanes, new THREE.Plane(normal, -normal.dot(worldPos) + 0.01)],
+            clippingPlanes: [...existingPlanes, new THREE.Plane(normal, (planeOffset !== 0 ? planeOffset : -normal.dot(worldPos)) + 0.01 * (side === 0 ? 1 : -1))],
           });
 
           const halfMesh = new THREE.Mesh(cloneGeo, halfMat);
@@ -1007,8 +1022,11 @@
           });
 
           const capMesh = new THREE.Mesh(capGeo, capMat);
-          capMesh.position.copy(worldPos);
-          capMesh.lookAt(worldPos.clone().add(planeNormal));
+          // Position cap at the actual cut point (plane intersection with fruit)
+          const distToPlane = planeNormal.dot(worldPos) + (planeOffset !== 0 ? planeOffset : -planeNormal.dot(worldPos));
+          const capPos = worldPos.clone().sub(planeNormal.clone().multiplyScalar(distToPlane));
+          capMesh.position.copy(capPos);
+          capMesh.lookAt(capPos.clone().add(planeNormal));
 
           capGroup.add(halfMesh);
           capGroup.add(capMesh);
@@ -1017,20 +1035,15 @@
           const pushDir = side === 0 ? planeNormal.clone() : planeNormal.clone().negate();
           newPieces.push({
             group: capGroup,
-            velocity: pushDir.multiplyScalar(1.5 + Math.random()).add(new THREE.Vector3(0, 2, 0)),
-            angularVel: new THREE.Vector3(
-              (Math.random() - 0.5) * 3,
-              (Math.random() - 0.5) * 3,
-              (Math.random() - 0.5) * 3,
-            ),
-            landed: false,
+            velocity: pushDir.multiplyScalar(0.3 + Math.random() * 0.2), // slow separation
+            separationTime: 0, // tracks ease-out progress
             materials: [halfMat, capMat],
             sliceCount: sliceCount,
-            sliceable: sliceCount < 3, // max 3 total slices (original + 2 re-slices)
+            sliceable: worldScale.x > 0.3, // too small = no more slicing
           });
         }
 
-        spawnParticles(worldPos, fruitDef.color, particleCount);
+        spawnParticles(worldPos, fruitDef.color, planeNormal, particleCount);
       });
 
       return newPieces;
@@ -1038,8 +1051,6 @@
 
     function sliceFruit(startNDC, endNDC) {
       if (!currentFruitGroup) return;
-
-      const planeNormal = computeSlicePlane(startNDC, endNDC);
 
       // Check hit on main fruit
       let hitFruit = false;
@@ -1053,11 +1064,12 @@
 
       if (!hitFruit) return;
 
+      const { normal: planeNormal, offset: planeOffset } = computeSlicePlane(startNDC, endNDC, meshesToSlice);
       const fruitDef = FRUITS[currentFruitType];
       const speed = startNDC.distanceTo(endNDC) * 5;
       audio.playSlice(speed, currentFruitType);
 
-      const newPieces = createSlicedHalves(meshesToSlice, planeNormal, fruitDef, false, 0);
+      const newPieces = createSlicedHalves(meshesToSlice, planeNormal, planeOffset, fruitDef, false, 0);
       slicedPieces.push(...newPieces);
 
       // Remove original fruit
@@ -1074,14 +1086,11 @@
         animateZoomIn();
       }
 
-      scheduleRespawn();
     }
 
     // Re-slice a sliced piece (§7.3)
     function reSlicePiece(piece, startNDC, endNDC) {
       if (!piece.sliceable) return false;
-
-      const planeNormal = computeSlicePlane(startNDC, endNDC);
 
       const fruitDef = FRUITS[currentFruitType];
 
@@ -1094,10 +1103,12 @@
       });
       if (meshesToSlice.length === 0) return false;
 
-      // Play sound at reduced volume for re-slice (§7.3)
-      audio.playSlice(startNDC.distanceTo(endNDC) * 5, currentFruitType);
+      const { normal: planeNormal, offset: planeOffset } = computeSlicePlane(startNDC, endNDC, meshesToSlice);
 
-      const newPieces = createSlicedHalves(meshesToSlice, planeNormal, fruitDef, true, piece.sliceCount);
+      // Play sound at reduced volume for re-slice (§7.3)
+      audio.playSlice(startNDC.distanceTo(endNDC) * 5, currentFruitType, 0.7);
+
+      const newPieces = createSlicedHalves(meshesToSlice, planeNormal, planeOffset, fruitDef, true, piece.sliceCount);
       slicedPieces.push(...newPieces);
 
       // Remove the original piece
@@ -1110,29 +1121,9 @@
       score++;
       document.getElementById('score').textContent = score;
 
-      scheduleRespawn();
       return true;
     }
 
-    // Respawn after all pieces fade (§7.6)
-    let respawnGeneration = 0;
-    function scheduleRespawn() {
-      if (respawnTimer) clearTimeout(respawnTimer);
-      const gen = ++respawnGeneration;
-      function checkRespawn() {
-        if (gen !== respawnGeneration) return; // stale timer
-        if (slicedPieces.length === 0 && !currentFruitGroup) {
-          respawnTimer = setTimeout(() => {
-            if (gen !== respawnGeneration) return;
-            isFirstSlice = true;
-            createFruit(currentFruitType);
-          }, 1000);
-        } else if (!currentFruitGroup) {
-          respawnTimer = setTimeout(checkRespawn, 500);
-        }
-      }
-      respawnTimer = setTimeout(checkRespawn, 500);
-    }
 
     // ─── Input Handling ───
     const cursor = document.getElementById('custom-cursor');
@@ -1185,7 +1176,7 @@
         } else {
           // Check re-slice on sliced pieces (§7.3)
           for (const piece of slicedPieces) {
-            if (!piece.sliceable || piece.landed) continue;
+            if (!piece.sliceable) continue;
             if (trailHitsObjects(sliceTrail, piece.group.children)) {
               reSlicePiece(piece, sliceStart, sliceEnd);
               break;
@@ -1208,7 +1199,6 @@
         document.querySelectorAll('.fruit-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         currentFruitType = btn.dataset.fruit;
-        if (respawnTimer) clearTimeout(respawnTimer);
         isFirstSlice = true;
         createFruit(currentFruitType);
       });
@@ -1270,41 +1260,21 @@
         });
       }
 
-      // Update sliced pieces
-      slicedPieces = slicedPieces.filter(piece => {
-        if (!piece.landed) {
-          piece.velocity.y -= 5 * dt;
-          piece.group.position.addScaledVector(piece.velocity, dt);
-          piece.group.rotation.x += piece.angularVel.x * dt;
-          piece.group.rotation.y += piece.angularVel.y * dt;
-          piece.group.rotation.z += piece.angularVel.z * dt;
-
-          if (piece.group.position.y < -1.3) {
-            piece.group.position.y = -1.3;
-            piece.velocity.set(0, 0, 0);
-            piece.angularVel.multiplyScalar(0.1);
-            piece.landed = true;
-            piece.fadeTimer = 2.0;
-          }
-        } else {
-          piece.fadeTimer -= dt;
-          piece.materials.forEach(mat => {
-            if (mat.uniforms.uOpacity) {
-              mat.uniforms.uOpacity.value = Math.max(0, piece.fadeTimer / 2 * 0.35);
-            }
-          });
-          if (piece.fadeTimer <= 0) {
-            disposeGroup(piece.group);
-            return false;
-          }
+      // Update sliced pieces — slow ease-out separation, then stay in place
+      slicedPieces.forEach(piece => {
+        if (piece.separationTime < 0.5) {
+          piece.separationTime += dt;
+          // Ease-out: decelerate over 0.5s
+          const t = Math.min(piece.separationTime / 0.5, 1);
+          const easeOut = 1 - (1 - t) * (1 - t);
+          const factor = 1 - easeOut; // goes from 1 to 0
+          piece.group.position.addScaledVector(piece.velocity, dt * factor);
         }
 
-        // Update time uniforms (once, covers both branches)
+        // Update time uniforms
         piece.materials.forEach(mat => {
           if (mat.uniforms.uTime) mat.uniforms.uTime.value = elapsed;
         });
-
-        return true;
       });
 
       // Update particles
@@ -1341,6 +1311,7 @@
     function hideHint() {
       if (!hintHidden) {
         hintHidden = true;
+        hint.style.animation = 'none';
         hint.style.transition = 'opacity 1s';
         hint.style.opacity = '0';
       }
