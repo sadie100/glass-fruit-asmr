@@ -448,7 +448,7 @@
         name: '수박',
         color: new THREE.Color(0.15, 0.55, 0.2),
         innerColor: new THREE.Color(0.95, 0.25, 0.2),
-        size: 1.2,
+        size: 1.6,
         geometry: () => {
           const g = new THREE.SphereGeometry(1, 48, 48);
           const pos = g.attributes.position;
@@ -1092,14 +1092,6 @@
         animateZoomIn();
       }
 
-      // Auto-respawn same fruit after 2.5s
-      const respawnType = currentFruitType;
-      setTimeout(() => {
-        if (!currentFruitGroup) {
-          createFruit(respawnType);
-        }
-      }, 2500);
-
     }
 
     // Re-slice a sliced piece (§7.3)
@@ -1277,8 +1269,8 @@
         });
       }
 
-      // Update sliced pieces — separation, then gravity fall, then fade out
-      slicedPieces = slicedPieces.filter(piece => {
+      // Update sliced pieces — separation then hold in place
+      slicedPieces.forEach(piece => {
         piece.separationTime += dt;
 
         if (piece.separationTime < 0.5) {
@@ -1287,39 +1279,12 @@
           const easeOut = 1 - (1 - t) * (1 - t);
           const factor = 1 - easeOut;
           piece.group.position.addScaledVector(piece.velocity, dt * factor);
-        } else {
-          // Phase 2: gravity fall (0.5s+)
-          if (!piece.gravityVel) piece.gravityVel = new THREE.Vector3(
-            piece.velocity.x * 0.3, 0, piece.velocity.z * 0.3
-          );
-          piece.gravityVel.y -= 9.8 * dt;
-          piece.group.position.addScaledVector(piece.gravityVel, dt);
-
-          // Add tumble rotation
-          if (!piece.angularVel) piece.angularVel = new THREE.Vector3(
-            (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2
-          );
-          piece.group.rotation.x += piece.angularVel.x * dt;
-          piece.group.rotation.z += piece.angularVel.z * dt;
-        }
-
-        // Fade out: start at 2s, fully transparent at 3s
-        if (piece.separationTime > 2.0) {
-          const fadeT = Math.min((piece.separationTime - 2.0) / 1.0, 1);
-          piece.materials.forEach(mat => {
-            if (mat.uniforms.uOpacity) mat.uniforms.uOpacity.value = 0.35 * (1 - fadeT);
-          });
-          if (fadeT >= 1) {
-            disposeGroup(piece.group);
-            return false; // remove from array
-          }
         }
 
         // Update time uniforms
         piece.materials.forEach(mat => {
           if (mat.uniforms.uTime) mat.uniforms.uTime.value = elapsed;
         });
-        return true;
       });
 
       // Update particles
