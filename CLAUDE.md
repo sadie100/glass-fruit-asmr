@@ -8,7 +8,13 @@ Glass Fruit ASMR Slicer — a browser-based interactive experience where users d
 
 ## Running
 
-Open `index.html` directly in a browser, or serve with any static file server (e.g. `npx serve .`). No dependencies to install — Three.js r160 is loaded via CDN import map.
+Open `index.html` directly in a browser, or use the dev server:
+
+```bash
+npm run dev    # serves on http://localhost:8080
+```
+
+No dependencies to install — Three.js r160 is loaded via CDN import map.
 
 ## Architecture
 
