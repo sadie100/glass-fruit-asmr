@@ -148,12 +148,21 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     // ─── Audio System (Procedural ASMR) ───
+    const FRUIT_AUDIO_PARAMS = {
+      apple:      { baseFreq: 2200, resonance: 0.7, color: 0.8 },
+      orange:     { baseFreq: 1800, resonance: 0.5, color: 0.6 },
+      grape:      { baseFreq: 3200, resonance: 0.9, color: 1.0 },
+      watermelon: { baseFreq: 800,  resonance: 0.3, color: 0.4 },
+      strawberry: { baseFreq: 2800, resonance: 0.8, color: 0.9 },
+    };
+
     class ASMRAudio {
       constructor() {
         this.ctx = null;
         this.masterGain = null;
         this.reverbNode = null;
         this.initialized = false;
+        this.ambientStarted = false;
       }
 
       async init() {
@@ -188,15 +197,7 @@
         if (!this.initialized) return;
         const ctx = this.ctx;
         const now = ctx.currentTime;
-
-        const fruitParams = {
-          apple:      { baseFreq: 2200, resonance: 0.7, color: 0.8 },
-          orange:     { baseFreq: 1800, resonance: 0.5, color: 0.6 },
-          grape:      { baseFreq: 3200, resonance: 0.9, color: 1.0 },
-          watermelon: { baseFreq: 800,  resonance: 0.3, color: 0.4 },
-          strawberry: { baseFreq: 2800, resonance: 0.8, color: 0.9 },
-        };
-        const params = fruitParams[fruitType] || fruitParams.apple;
+        const params = FRUIT_AUDIO_PARAMS[fruitType] || FRUIT_AUDIO_PARAMS.apple;
 
         // Layer 1: Glass cracking / cutting tone
         this._glassSliceLayer(now, params, speed);
@@ -327,15 +328,7 @@
         if (!this.initialized) return;
         const ctx = this.ctx;
         const now = ctx.currentTime;
-
-        const fruitParams = {
-          apple:      { baseFreq: 2200, resonance: 0.7 },
-          orange:     { baseFreq: 1800, resonance: 0.5 },
-          grape:      { baseFreq: 3200, resonance: 0.9 },
-          watermelon: { baseFreq: 800,  resonance: 0.3 },
-          strawberry: { baseFreq: 2800, resonance: 0.8 },
-        };
-        const params = fruitParams[fruitType] || fruitParams.apple;
+        const params = FRUIT_AUDIO_PARAMS[fruitType] || FRUIT_AUDIO_PARAMS.apple;
         const pitchRand = 0.9 + Math.random() * 0.2; // ±10%
 
         // Glass Tap: short sine at baseFreq × 1.2
@@ -374,14 +367,7 @@
         if (!this.initialized) return;
         const ctx = this.ctx;
         const now = ctx.currentTime;
-        const fruitParams = {
-          apple:      { baseFreq: 2200 },
-          orange:     { baseFreq: 1800 },
-          grape:      { baseFreq: 3200 },
-          watermelon: { baseFreq: 800 },
-          strawberry: { baseFreq: 2800 },
-        };
-        const freq = (fruitParams[fruitType] || fruitParams.apple).baseFreq * 0.5;
+        const freq = (FRUIT_AUDIO_PARAMS[fruitType] || FRUIT_AUDIO_PARAMS.apple).baseFreq * 0.5;
         const osc = ctx.createOscillator();
         osc.type = 'sine';
         osc.frequency.value = freq;
@@ -396,9 +382,10 @@
         osc.stop(now + 0.3);
       }
 
-      // Ambient hum
+      // Ambient hum (called once)
       playAmbient() {
-        if (!this.initialized) return;
+        if (!this.initialized || this.ambientStarted) return;
+        this.ambientStarted = true;
         const ctx = this.ctx;
         const osc = ctx.createOscillator();
         osc.type = 'sine';
@@ -578,6 +565,19 @@
       }
     `;
 
+    const capVertexShader = `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vViewDir;
+      void main() {
+        vUv = uv;
+        vNormal = normalize(normalMatrix * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vViewDir = normalize(cameraPosition - wp.xyz);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `;
+
     // ─── Scene Setup ───
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x080810);
@@ -635,6 +635,39 @@
     const slashCtx = slashCanvas.getContext('2d');
     slashCanvas.width = window.innerWidth;
     slashCanvas.height = window.innerHeight;
+
+    // ─── Helpers ───
+    const _ndcVec = new THREE.Vector2();
+    function clientToNDC(clientX, clientY, out) {
+      const v = out || _ndcVec;
+      v.set((clientX / window.innerWidth) * 2 - 1, -(clientY / window.innerHeight) * 2 + 1);
+      return v;
+    }
+
+    function computeSlicePlane(startNDC, endNDC) {
+      const sliceDir3D = new THREE.Vector3(
+        endNDC.x - startNDC.x, endNDC.y - startNDC.y, 0
+      ).normalize();
+      const planeNormal = new THREE.Vector3(-sliceDir3D.y, sliceDir3D.x, 0).normalize();
+      planeNormal.applyQuaternion(camera.quaternion.clone());
+      return planeNormal;
+    }
+
+    function disposeGroup(group) {
+      scene.remove(group);
+      group.traverse(child => {
+        if (child.isMesh) { child.geometry.dispose(); child.material.dispose(); }
+      });
+    }
+
+    function trailHitsObjects(trail, objects) {
+      for (let i = 0; i < trail.length; i += Math.max(1, Math.floor(trail.length / 10))) {
+        const ndc = clientToNDC(trail[i].x, trail[i].y);
+        raycaster.setFromCamera(ndc, camera);
+        if (raycaster.intersectObjects(objects, true).length > 0) return true;
+      }
+      return false;
+    }
 
     // ─── State ───
     let currentFruitType = 'apple';
@@ -753,27 +786,16 @@
       });
     }
 
+    let spawnAnimId = null;
+
     function createFruit(type) {
+      // Cancel any in-progress spawn animation
+      if (spawnAnimId) { cancelAnimationFrame(spawnAnimId); spawnAnimId = null; }
+
       // Remove existing
-      if (currentFruitGroup) {
-        scene.remove(currentFruitGroup);
-        currentFruitGroup.traverse(child => {
-          if (child.isMesh) {
-            child.geometry.dispose();
-            child.material.dispose();
-          }
-        });
-      }
+      if (currentFruitGroup) disposeGroup(currentFruitGroup);
       // Remove sliced pieces
-      slicedPieces.forEach(p => {
-        scene.remove(p.group);
-        p.group.traverse(child => {
-          if (child.isMesh) {
-            child.geometry.dispose();
-            child.material.dispose();
-          }
-        });
-      });
+      slicedPieces.forEach(p => disposeGroup(p.group));
       slicedPieces = [];
 
       const fruitDef = FRUITS[type];
@@ -831,12 +853,14 @@
       const spawnStart = performance.now();
       function animateSpawn() {
         const t = Math.min((performance.now() - spawnStart) / 400, 1);
+        if (currentFruitGroup !== group) return; // guard: fruit was replaced
         const ease = 1 - Math.pow(1 - t, 3); // ease-out cubic
         group.scale.setScalar(ease);
         group.position.y = 0.3 * (1 - ease);
-        if (t < 1) requestAnimationFrame(animateSpawn);
+        if (t < 1) spawnAnimId = requestAnimationFrame(animateSpawn);
+        else spawnAnimId = null;
       }
-      animateSpawn();
+      spawnAnimId = requestAnimationFrame(animateSpawn);
 
       // Spawn sound
       audio.playSpawn(type);
@@ -860,9 +884,7 @@
           camera.updateProjectionMatrix();
           requestAnimationFrame(zoomStep);
         } else if (elapsed < 1500) {
-          // Hold for 1s
-          camera.fov = targetFOV;
-          camera.updateProjectionMatrix();
+          // Hold for 1s — FOV already set, no update needed
           requestAnimationFrame(zoomStep);
         } else if (elapsed < 2000) {
           // Zoom back over 0.5s
@@ -882,9 +904,7 @@
 
     // ─── Tap interaction (§6) ───
     function handleTap(e) {
-      const ndcX = (e.clientX / window.innerWidth) * 2 - 1;
-      const ndcY = -(e.clientY / window.innerHeight) * 2 + 1;
-      raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+      raycaster.setFromCamera(clientToNDC(e.clientX, e.clientY), camera);
 
       // Check hit on main fruit
       if (currentFruitGroup) {
@@ -933,7 +953,6 @@
       const newPieces = [];
       const sliceCount = (sourceSliceCount || 0) + 1;
       const particleCount = isReSlice ? 15 : 30;
-      const volumeScale = isReSlice ? 0.7 : 1.0;
 
       meshesToSlice.forEach(mesh => {
         const worldPos = new THREE.Vector3();
@@ -977,18 +996,7 @@
           // Cross-section disc
           const capGeo = new THREE.CircleGeometry(worldScale.x * 1.0, 48);
           const capMat = new THREE.ShaderMaterial({
-            vertexShader: `
-              varying vec2 vUv;
-              varying vec3 vNormal;
-              varying vec3 vViewDir;
-              void main() {
-                vUv = uv;
-                vNormal = normalize(normalMatrix * normal);
-                vec4 wp = modelMatrix * vec4(position, 1.0);
-                vViewDir = normalize(cameraPosition - wp.xyz);
-                gl_Position = projectionMatrix * viewMatrix * wp;
-              }
-            `,
+            vertexShader: capVertexShader,
             fragmentShader: crossSectionFragShader,
             uniforms: {
               uInnerColor: { value: fruitDef.innerColor },
@@ -1031,11 +1039,7 @@
     function sliceFruit(startNDC, endNDC) {
       if (!currentFruitGroup) return;
 
-      const sliceDir3D = new THREE.Vector3(
-        endNDC.x - startNDC.x, endNDC.y - startNDC.y, 0
-      ).normalize();
-      const planeNormal = new THREE.Vector3(-sliceDir3D.y, sliceDir3D.x, 0).normalize();
-      planeNormal.applyQuaternion(camera.quaternion.clone());
+      const planeNormal = computeSlicePlane(startNDC, endNDC);
 
       // Check hit on main fruit
       let hitFruit = false;
@@ -1057,10 +1061,7 @@
       slicedPieces.push(...newPieces);
 
       // Remove original fruit
-      scene.remove(currentFruitGroup);
-      currentFruitGroup.traverse(child => {
-        if (child.isMesh) { child.geometry.dispose(); child.material.dispose(); }
-      });
+      disposeGroup(currentFruitGroup);
       currentFruitGroup = null;
 
       score++;
@@ -1080,11 +1081,7 @@
     function reSlicePiece(piece, startNDC, endNDC) {
       if (!piece.sliceable) return false;
 
-      const sliceDir3D = new THREE.Vector3(
-        endNDC.x - startNDC.x, endNDC.y - startNDC.y, 0
-      ).normalize();
-      const planeNormal = new THREE.Vector3(-sliceDir3D.y, sliceDir3D.x, 0).normalize();
-      planeNormal.applyQuaternion(camera.quaternion.clone());
+      const planeNormal = computeSlicePlane(startNDC, endNDC);
 
       const fruitDef = FRUITS[currentFruitType];
 
@@ -1104,10 +1101,7 @@
       slicedPieces.push(...newPieces);
 
       // Remove the original piece
-      scene.remove(piece.group);
-      piece.group.traverse(child => {
-        if (child.isMesh) { child.geometry.dispose(); child.material.dispose(); }
-      });
+      disposeGroup(piece.group);
 
       // Mark for removal
       piece.removed = true;
@@ -1121,15 +1115,18 @@
     }
 
     // Respawn after all pieces fade (§7.6)
+    let respawnGeneration = 0;
     function scheduleRespawn() {
       if (respawnTimer) clearTimeout(respawnTimer);
-      // Check every 500ms if all pieces are gone
+      const gen = ++respawnGeneration;
       function checkRespawn() {
+        if (gen !== respawnGeneration) return; // stale timer
         if (slicedPieces.length === 0 && !currentFruitGroup) {
           respawnTimer = setTimeout(() => {
+            if (gen !== respawnGeneration) return;
             isFirstSlice = true;
             createFruit(currentFruitType);
-          }, 1000); // 1s delay after all pieces gone
+          }, 1000);
         } else if (!currentFruitGroup) {
           respawnTimer = setTimeout(checkRespawn, 500);
         }
@@ -1148,18 +1145,14 @@
         sliceTrail.push({ x: e.clientX, y: e.clientY, time: Date.now() });
       }
 
-      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      clientToNDC(e.clientX, e.clientY, mouse);
     }
 
     function onPointerDown(e) {
       if (e.target.closest('.fruit-btn')) return;
 
       isSlicing = true;
-      sliceStart.set(
-        (e.clientX / window.innerWidth) * 2 - 1,
-        -(e.clientY / window.innerHeight) * 2 + 1
-      );
+      clientToNDC(e.clientX, e.clientY, sliceStart);
       sliceTrail = [{ x: e.clientX, y: e.clientY, time: Date.now() }];
       cursor.classList.add('slicing');
       controls.enabled = false;
@@ -1174,10 +1167,7 @@
       cursor.classList.remove('slicing');
       controls.enabled = true;
 
-      sliceEnd.set(
-        (e.clientX / window.innerWidth) * 2 - 1,
-        -(e.clientY / window.innerHeight) * 2 + 1
-      );
+      clientToNDC(e.clientX, e.clientY, sliceEnd);
 
       const dist = sliceStart.distanceTo(sliceEnd);
 
@@ -1190,42 +1180,13 @@
 
       // Slice detection (§7.1): NDC distance > 0.1
       if (dist > 0.1) {
-        let hitsFruit = false;
-        // Check main fruit
-        for (let i = 0; i < sliceTrail.length; i += Math.max(1, Math.floor(sliceTrail.length / 10))) {
-          const pt = sliceTrail[i];
-          const ndcX = (pt.x / window.innerWidth) * 2 - 1;
-          const ndcY = -(pt.y / window.innerHeight) * 2 + 1;
-          raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-
-          if (currentFruitGroup) {
-            const intersects = raycaster.intersectObjects(currentFruitGroup.children, true);
-            if (intersects.length > 0) {
-              hitsFruit = true;
-              break;
-            }
-          }
-        }
-
-        if (hitsFruit) {
+        if (currentFruitGroup && trailHitsObjects(sliceTrail, currentFruitGroup.children)) {
           sliceFruit(sliceStart, sliceEnd);
         } else {
           // Check re-slice on sliced pieces (§7.3)
           for (const piece of slicedPieces) {
             if (!piece.sliceable || piece.landed) continue;
-            let hitPiece = false;
-            for (let i = 0; i < sliceTrail.length; i += Math.max(1, Math.floor(sliceTrail.length / 10))) {
-              const pt = sliceTrail[i];
-              const ndcX = (pt.x / window.innerWidth) * 2 - 1;
-              const ndcY = -(pt.y / window.innerHeight) * 2 + 1;
-              raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-              const intersects = raycaster.intersectObjects(piece.group.children, true);
-              if (intersects.length > 0) {
-                hitPiece = true;
-                break;
-              }
-            }
-            if (hitPiece) {
+            if (trailHitsObjects(sliceTrail, piece.group.children)) {
               reSlicePiece(piece, sliceStart, sliceEnd);
               break;
             }
@@ -1260,6 +1221,10 @@
       if (sliceTrail.length < 2) return;
 
       const now = Date.now();
+      // Prune entries older than 300ms
+      while (sliceTrail.length > 0 && (now - sliceTrail[0].time) > 300) sliceTrail.shift();
+      if (sliceTrail.length < 2) return;
+
       slashCtx.lineCap = 'round';
       slashCtx.lineJoin = 'round';
 
@@ -1327,23 +1292,14 @@
             if (mat.uniforms.uOpacity) {
               mat.uniforms.uOpacity.value = Math.max(0, piece.fadeTimer / 2 * 0.35);
             }
-            if (mat.uniforms.uTime) {
-              mat.uniforms.uTime.value = elapsed;
-            }
           });
           if (piece.fadeTimer <= 0) {
-            scene.remove(piece.group);
-            piece.group.traverse(child => {
-              if (child.isMesh) {
-                child.geometry.dispose();
-                child.material.dispose();
-              }
-            });
+            disposeGroup(piece.group);
             return false;
           }
         }
 
-        // Update time uniforms
+        // Update time uniforms (once, covers both branches)
         piece.materials.forEach(mat => {
           if (mat.uniforms.uTime) mat.uniforms.uTime.value = elapsed;
         });
