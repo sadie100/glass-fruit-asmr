@@ -448,7 +448,7 @@
         name: '수박',
         color: new THREE.Color(0.15, 0.55, 0.2),
         innerColor: new THREE.Color(0.95, 0.25, 0.2),
-        size: 1.6,
+        size: 1.2,
         geometry: () => {
           const g = new THREE.SphereGeometry(1, 48, 48);
           const pos = g.attributes.position;
@@ -550,20 +550,27 @@
       void main() {
         vec2 center = vUv - 0.5;
         float dist = length(center);
-        float ring = sin(dist * 25.0) * 0.5 + 0.5;
+        float ring = sin(dist * 20.0) * 0.5 + 0.5;
 
-        // Brighter inner color with stronger ring contrast
-        vec3 brightInner = uInnerColor * 1.4;
-        vec3 col = mix(brightInner, brightInner * 0.5, ring * 0.5);
+        // Vivid inner color with strong emission
+        vec3 brightInner = uInnerColor * 2.0;
+        vec3 col = mix(brightInner, brightInner * 0.6, ring * 0.4);
 
-        // Stronger fresnel glow at edges
-        float fresnel = pow(1.0 - max(dot(normalize(vViewDir), normalize(vNormal)), 0.0), 1.5);
-        col += vec3(0.5) * fresnel;
+        // Bright center glow
+        float centerGlow = 1.0 - smoothstep(0.0, 0.5, dist);
+        col += uInnerColor * centerGlow * 0.8;
 
-        float shimmer = sin(vUv.x * 30.0 + uTime) * sin(vUv.y * 30.0 + uTime * 0.7) * 0.08;
+        // Strong fresnel glow at edges
+        float fresnel = pow(1.0 - max(dot(normalize(vViewDir), normalize(vNormal)), 0.0), 1.2);
+        col += vec3(0.8) * fresnel;
+
+        float shimmer = sin(vUv.x * 25.0 + uTime * 2.0) * sin(vUv.y * 25.0 + uTime * 1.4) * 0.12;
         col += shimmer;
 
-        gl_FragColor = vec4(col, 0.95);
+        // Pulsing glow
+        col += uInnerColor * 0.15 * (sin(uTime * 3.0) * 0.5 + 0.5);
+
+        gl_FragColor = vec4(col, 1.0);
       }
     `;
 
@@ -721,6 +728,7 @@
         });
 
         this.mesh = new THREE.Mesh(geo, mat);
+        this.mesh.renderOrder = 10; // render on top of glass fruit
         this.mesh.position.copy(position);
         this.mesh.rotation.set(
           Math.random() * Math.PI,
@@ -774,18 +782,23 @@
 
     function spawnParticles(position, color, normal, count = 20) {
       for (let i = 0; i < count; i++) {
-        // Offset spawn position along normal to avoid spawning inside fruit
+        // Offset spawn position far along normal to avoid spawning inside fruit
         const side = Math.random() > 0.5 ? 1 : -1;
-        const spawnPos = position.clone().addScaledVector(normal, side * (0.1 + Math.random() * 0.1));
+        const spawnPos = position.clone().addScaledVector(normal, side * (0.3 + Math.random() * 0.2));
+        // Also add random surface-tangent offset
+        const tangent = new THREE.Vector3(
+          (Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)
+        ).cross(normal).normalize();
+        spawnPos.addScaledVector(tangent, (Math.random() - 0.5) * 0.3);
 
-        const speed = 0.3 + Math.random() * 0.5;
+        const speed = 0.8 + Math.random() * 1.0;
         const spread = new THREE.Vector3(
-          (Math.random() - 0.5) * 0.6,
-          (Math.random() - 0.5) * 0.6,
-          (Math.random() - 0.5) * 0.6
+          (Math.random() - 0.5) * 0.4,
+          Math.random() * 0.5,
+          (Math.random() - 0.5) * 0.4
         );
-        // Stronger outward velocity along normal direction
-        const dir = normal.clone().multiplyScalar(side * (speed + 0.2)).add(spread);
+        // Strong outward velocity along normal direction
+        const dir = normal.clone().multiplyScalar(side * speed).add(spread);
         particles.push(new GlassParticle(spawnPos, color, dir));
       }
     }
@@ -1015,7 +1028,7 @@
           halfMesh.userData.sliceCount = sliceCount;
 
           // Cross-section disc
-          const capGeo = new THREE.CircleGeometry(worldScale.x * 1.0, 48);
+          const capGeo = new THREE.CircleGeometry(worldScale.x * 1.2, 48);
           const capMat = new THREE.ShaderMaterial({
             vertexShader: capVertexShader,
             fragmentShader: crossSectionFragShader,
@@ -1041,7 +1054,7 @@
           const pushDir = side === 0 ? planeNormal.clone() : planeNormal.clone().negate();
           newPieces.push({
             group: capGroup,
-            velocity: pushDir.multiplyScalar(0.3 + Math.random() * 0.2), // slow separation
+            velocity: pushDir.multiplyScalar(2.0 + Math.random() * 0.8), // strong separation
             separationTime: 0, // tracks ease-out progress
             materials: [halfMat, capMat],
             sliceCount: sliceCount,
@@ -1191,11 +1204,11 @@
         }
       }
 
-      // Fade slash trail — clear after 300ms and force canvas clear
+      // Fade slash trail — clear after 150ms and force canvas clear
       setTimeout(() => {
         sliceTrail = [];
         slashCtx.clearRect(0, 0, slashCanvas.width, slashCanvas.height);
-      }, 300);
+      }, 150);
     }
 
     window.addEventListener('pointermove', onPointerMove);
@@ -1220,15 +1233,15 @@
       if (sliceTrail.length < 2) return;
 
       const now = Date.now();
-      // Prune entries older than 300ms
-      while (sliceTrail.length > 0 && (now - sliceTrail[0].time) > 300) sliceTrail.shift();
+      // Prune entries older than 150ms for fast fade
+      while (sliceTrail.length > 0 && (now - sliceTrail[0].time) > 150) sliceTrail.shift();
       if (sliceTrail.length < 2) return;
 
       slashCtx.lineCap = 'round';
       slashCtx.lineJoin = 'round';
 
       for (let i = 1; i < sliceTrail.length; i++) {
-        const age = (now - sliceTrail[i].time) / 300;
+        const age = (now - sliceTrail[i].time) / 150;
         if (age > 1) continue;
 
         const alpha = (1 - age) * 0.8;
@@ -1269,16 +1282,18 @@
         });
       }
 
-      // Update sliced pieces — separation then hold in place
+      // Update sliced pieces — separation with gravity then fade
       slicedPieces.forEach(piece => {
         piece.separationTime += dt;
 
-        if (piece.separationTime < 0.5) {
-          // Phase 1: ease-out separation (0–0.5s)
-          const t = Math.min(piece.separationTime / 0.5, 1);
+        if (piece.separationTime < 1.0) {
+          // Phase 1: ease-out separation (0–1.0s) with gravity
+          const t = Math.min(piece.separationTime / 1.0, 1);
           const easeOut = 1 - (1 - t) * (1 - t);
           const factor = 1 - easeOut;
           piece.group.position.addScaledVector(piece.velocity, dt * factor);
+          // Add gentle gravity for falling effect
+          piece.group.position.y -= 0.8 * dt * piece.separationTime;
         }
 
         // Update time uniforms
