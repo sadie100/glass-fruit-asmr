@@ -29,3 +29,7 @@ Everything lives in one `index.html` file with inline `<style>` and `<script typ
 - Audio is fully procedural (no audio files) — initialized on first user interaction per browser autoplay policy
 - Korean UI text (lang="ko")
 - Custom cursor replaces native cursor (`cursor: none` on body)
+
+## Playwright MCP
+
+When using `--output-mode file`, always set `--output-dir .playwright-output/`.
